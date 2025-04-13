@@ -1,3 +1,5 @@
+#Retransmissão: Implementar lógica para reenviar segmentos específicos caso o cliente solicite (devido a perdas ou erros).
+#Lidar com pedidos de arquivos nao existentes
 import socket
 import os
 import zlib
@@ -60,7 +62,7 @@ while True:
 # B  -> Um inteiro de 1 byte (8 bits), usado para armazenar o valor de 'is_last' (se é o último segmento ou não)
 # I  -> Um inteiro de 4 bytes (32 bits), usado para armazenar o tamanho do payload (payload_size)
 # I  -> Um inteiro de 4 bytes (32 bits), usado para armazenar o checksum calculado para o payload
-
+# =13
 # O resultado é um cabeçalho de 13 bytes que contém:
 # - Número de sequência (seq) (4 bytes)
 # - Flag indicando se é o último pacote (is_last) (1 byte)

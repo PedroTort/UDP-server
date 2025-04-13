@@ -1,3 +1,8 @@
+#Se o arquivo estiver com erro ou incompleto:
+#Identificar quais segmentos estão faltando ou corrompidos.
+#Solicitar a retransmissão desses segmentos específicos ao servidor, utilizando o protocolo definido.
+#Repetir o processo de recepção e verificação até que o arquivo esteja completo e correto.
+#Interpretação de Erros: Interpretar e exibir mensagens de erro recebidas do servidor (ex: “Arquivo não encontrado”)
 import socket
 import struct
 import zlib
@@ -39,7 +44,7 @@ if "OK: Enviando" in response.decode():
 
     while parts_received < total_parts:
         packet, _ = sock.recvfrom(SEGMENT_SIZE)
-
+        
         try:
             header = packet[:HEADER_SIZE]
             payload = packet[HEADER_SIZE:]
