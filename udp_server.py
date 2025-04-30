@@ -1,70 +1,87 @@
-#Retransmissão: Implementar lógica para reenviar segmentos específicos caso o cliente solicite (devido a perdas ou erros).
-#Lidar com pedidos de arquivos nao existentes
 import socket
 import os
 import zlib
 import struct
+import time
 
 UDP_IP = "127.0.0.1"
 UDP_PORT = 5050
 SEGMENT_SIZE = 1024
 HEADER_SIZE = 13  # 4 (seq) + 1 (is_last) + 4 (payload_size) + 4 (checksum)
 PAYLOAD_SIZE = SEGMENT_SIZE - HEADER_SIZE
+TIMEOUT = 1.0
+MAX_RETRIES = 5
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((UDP_IP, UDP_PORT))
+sock.settimeout(TIMEOUT)
 
 print(f"[SERVIDOR] Escutando em {UDP_IP}:{UDP_PORT}")
 
-while True:
-    data, addr = sock.recvfrom(1024)
-    message = data.decode().strip()
-    print(f"[REQUISIÇÃO de {addr}] {message}")
+pacotes_enviados = {}
 
-    if message.startswith("GET "):
+while True:
+    try:
+        data, addr = sock.recvfrom(1024)
+        message = data.decode(errors="ignore").strip()
+        print(f"[REQUISIÇÃO de {addr}] {message}")
+    except socket.timeout:
+        continue
+
+    print(f"{message}")
+    if message.startswith("GET"):
         filename = message[4:].strip()
 
-        if os.path.isfile(filename):
-            filesize = os.path.getsize(filename)
-            total_parts = (filesize + PAYLOAD_SIZE - 1) // PAYLOAD_SIZE
+        if not filename:
+            error_msg = "ERRO: Nome do arquivo não pode ser vazio."
+            sock.sendto(error_msg.encode(), addr)
+            print(f"[ERRO] {error_msg} para {addr}")
+            continue
 
-            sock.sendto(f"OK: Enviando '{filename}' em {total_parts} partes".encode(), addr)
+        if not os.path.isfile(filename):
+            error_msg = f"ERRO: Arquivo '{filename}' não encontrado."
+            sock.sendto(error_msg.encode(), addr)
+            print(f"[ERRO] {error_msg} para {addr}")
+            continue
 
-            with open(filename, "rb") as f:
-                seq = 0
-                while True:
-                    payload = f.read(PAYLOAD_SIZE)
-                    if not payload:
-                        break
+        filesize = os.path.getsize(filename)
+        total_parts = (filesize + PAYLOAD_SIZE - 1) // PAYLOAD_SIZE
 
-                    is_last = 1 if seq == total_parts - 1 else 0
-                    payload_size = len(payload)
-                    checksum = zlib.crc32(payload)
+        sock.sendto(f"OK: Enviando '{filename}' em {total_parts} partes".encode(), addr)
+        pacotes_enviados[addr] = {}
 
-                    # Empacotamento do cabeçalho
-                    header = struct.pack("!IBII", seq, is_last, payload_size, checksum) #magia do python, tentar entender
-                    packet = header + payload
+        with open(filename, "rb") as f:
+            seq = 0
+            while seq < total_parts:
+                payload = f.read(PAYLOAD_SIZE)
+                is_last = 1 if seq == total_parts - 1 else 0
+                payload_size = len(payload)
+                checksum = zlib.crc32(payload)
+                header = struct.pack("!IBII", seq, is_last, payload_size, checksum)
+                packet = header + payload
 
+                retries = 0
+                while retries < MAX_RETRIES:
                     sock.sendto(packet, addr)
-                    print(f"[ENVIADO {seq}/{total_parts - 1}] {payload_size} bytes, checksum={checksum}")
-                    seq += 1
-        else:
-            sock.sendto("ERRO: Arquivo não encontrado.".encode(), addr)
-    else:
-        print(f"[MENSAGEM] {message}")
-        response = f"Mensagem recebida: '{message}'"
-        sock.sendto(response.encode(), addr)
+                    pacotes_enviados[addr][seq] = packet
+                    print(f"[ENVIADO {seq}] {payload_size} bytes | checksum: {checksum}, aguardando ACK...")
 
+                    try:
+                        sock.settimeout(TIMEOUT)
+                        ack_data, _ = sock.recvfrom(1024)
+                        ack_msg = ack_data.decode().strip()
 
-#header = struct.pack("!IBII", seq, is_last, payload_size, checksum)
-# !  -> Define a ordem dos bytes como 'big-endian' (ordem de bytes mais significativa primeiro)
-# I  -> Um inteiro de 4 bytes (32 bits), usado para armazenar o número de sequência (seq)
-# B  -> Um inteiro de 1 byte (8 bits), usado para armazenar o valor de 'is_last' (se é o último segmento ou não)
-# I  -> Um inteiro de 4 bytes (32 bits), usado para armazenar o tamanho do payload (payload_size)
-# I  -> Um inteiro de 4 bytes (32 bits), usado para armazenar o checksum calculado para o payload
-# =13
-# O resultado é um cabeçalho de 13 bytes que contém:
-# - Número de sequência (seq) (4 bytes)
-# - Flag indicando se é o último pacote (is_last) (1 byte)
-# - Tamanho do payload do pacote (payload_size) (4 bytes)
-# - Valor do checksum para verificar a integridade dos dados (checksum) (4 bytes)
+                        if ack_msg == f"ACK {seq}":
+                            print(f"[ACK RECEBIDO] {seq}")
+                            break
+                        else:
+                            print(f"[ACK INVÁLIDO] {ack_msg}")
+                    except socket.timeout:
+                        retries += 1
+                        print(f"[TIMEOUT] Tentando reenviar {seq} ({retries}/{MAX_RETRIES})")
+
+                if retries >= MAX_RETRIES:
+                    print(f"[FALHA] Pacote {seq} não confirmado após {MAX_RETRIES} tentativas.")
+                    break
+
+                seq += 1
