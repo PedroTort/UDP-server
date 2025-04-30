@@ -13,13 +13,18 @@ port_input = input(f"Digite a porta do servidor (padrão {DEFAULT_PORT}): ").str
 server_port = int(port_input) if port_input else DEFAULT_PORT
 
 simulate_loss = input("Simular perda de pacotes? (s/N): ").strip().lower() == 's'
+simulate_interruption = input("Simular interrupção do servidor durante a transferência? (s/N): ").strip().lower() == 's'
 
 filename = input("Digite o nome do arquivo a ser requisitado: ").strip()
-message = f"GET {filename}".encode()
+message = f"GET {filename}"
+
+# Adiciona a opção de interrupção ao comando de requisição (sem concatenação no nome do arquivo)
+if simulate_interruption:
+    message += " INTERROMPER"  # Aqui, a palavra "INTERROMPER" é separada por um espaço
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.settimeout(5.0)
-sock.sendto(message, (server_ip, server_port))
+sock.sendto(message.encode(), (server_ip, server_port))
 
 try:
     response, _ = sock.recvfrom(1024)
