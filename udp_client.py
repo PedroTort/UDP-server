@@ -8,82 +8,105 @@ DEFAULT_PORT = 5050
 SEGMENT_SIZE = 1024
 HEADER_SIZE = 13
 
-server_ip = input(f"Digite o IP do servidor (padrão {DEFAULT_IP}): ").strip() or DEFAULT_IP
-port_input = input(f"Digite a porta do servidor (padrão {DEFAULT_PORT}): ").strip()
-server_port = int(port_input) if port_input else DEFAULT_PORT
 
-simulate_loss = input("Simular perda de pacotes? (s/N): ").strip().lower() == 's'
-simulate_interruption = input("Simular interrupção do servidor durante a transferência? (s/N): ").strip().lower() == 's'
+def solicitar_configuracoes():
+    server_ip = input(f"Digite o IP do servidor (padrao {DEFAULT_IP}): ").strip() or DEFAULT_IP
+    port_input = input(f"Digite a porta do servidor (padrao {DEFAULT_PORT}): ").strip()
+    server_port = int(port_input) if port_input else DEFAULT_PORT
+    simulate_loss = input("Simular perda de pacotes? (s/N): ").strip().lower() == 's'
+    simulate_interruption = input("Simular interrupcao do servidor durante a transferencia? (s/N): ").strip().lower() == 's'
+    filename = input("Digite o nome do arquivo a ser requisitado: ").strip()
+    return server_ip, server_port, filename, simulate_loss, simulate_interruption
 
-filename = input("Digite o nome do arquivo a ser requisitado: ").strip()
-message = f"GET {filename}"
 
-# Adiciona a opção de interrupção ao comando de requisição (sem concatenação no nome do arquivo)
-if simulate_interruption:
-    message += " INTERROMPER"  # Aqui, a palavra "INTERROMPER" é separada por um espaço
+def construir_mensagem(filename, simulate_interruption):
+    message = f"GET {filename}"
+    if simulate_interruption:
+        message += " INTERROMPER"
+    return message
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.settimeout(5.0)
-sock.sendto(message.encode(), (server_ip, server_port))
 
-try:
-    response, _ = sock.recvfrom(1024)
-    response_str = response.decode()
+def receber_arquivo(sock, server_ip, server_port, total_parts, simulate_loss):
+    buffer = [None] * total_parts
+    received = set()
 
-    print("\n[RESPOSTA DO SERVIDOR]")
-    print(response_str)
+    print(f"[RECEBENDO ARQUIVO em {total_parts} partes]")
 
-    if response_str.startswith("ERRO"):
-        print("[ENCERRADO] O servidor retornou um erro.")
-        exit()
+    while len(received) < total_parts:
+        try:
+            packet, _ = sock.recvfrom(SEGMENT_SIZE)
+            header = packet[:HEADER_SIZE]
+            payload = packet[HEADER_SIZE:]
 
-    if "OK: Enviando" in response_str:
-        total_parts = int(response_str.split()[-2])
-        buffer = [None] * total_parts
-        received = set()
+            sequence_number, is_last, payload_size, received_checksum = struct.unpack("!IBII", header)
+            calculated_checksum = zlib.crc32(payload)
 
-        print(f"[RECEBENDO ARQUIVO em {total_parts} partes]")
+            if simulate_loss and random.random() < 0.1:
+                print(f"[SIMULACAO] Descartando pacote {sequence_number}")
+                continue
 
-        while len(received) < total_parts:
-            try:
-                packet, _ = sock.recvfrom(SEGMENT_SIZE)
-                header = packet[:HEADER_SIZE]
-                payload = packet[HEADER_SIZE:]
+            if received_checksum != calculated_checksum:
+                print(f"[ERRO] Checksum incorreto no pacote {sequence_number}")
+                continue
 
-                sequence_number, is_last, payload_size, received_checksum = struct.unpack("!IBII", header)
-                calculated_checksum = zlib.crc32(payload)
+            if buffer[sequence_number] is None:
+                buffer[sequence_number] = payload[:payload_size]
+                received.add(sequence_number)
+                print(f"[RECEBIDO {sequence_number}/{total_parts - 1}]")
 
-                # Simula perda
-                if simulate_loss and random.random() < 0.1:
-                    print(f"[SIMULAÇÃO] Descartando pacote {sequence_number}")
-                    continue
+            ack_message = f"ACK {sequence_number}"
+            sock.sendto(ack_message.encode(), (server_ip, server_port))
 
-                if received_checksum != calculated_checksum:
-                    print(f"[ERRO] Checksum incorreto no pacote {sequence_number}")
-                    continue
+        except socket.timeout:
+            print("[TIMEOUT] Aguardando pacotes restantes...")
+            break
 
-                if buffer[sequence_number] is None:
-                    buffer[sequence_number] = payload[:payload_size]
-                    received.add(sequence_number)
-                    print(f"[RECEBIDO {sequence_number}/{total_parts - 1}]")
+    return buffer
 
-                # Envia ACK
-                ack_message = f"ACK {sequence_number}"
-                sock.sendto(ack_message.encode(), (server_ip, server_port))
 
-            except socket.timeout:
-                print("[TIMEOUT] Aguardando pacotes restantes...")
+def salvar_arquivo(buffer):
+    if None not in buffer:
+        print("[TODAS AS PARTES RECEBIDAS] Reconstruindo o arquivo...")
+        full_data = b''.join(buffer)
+        with open("arquivo_recebido.txt", "wb") as f:
+            f.write(full_data)
+        print("[ARQUIVO SALVO COMO] 'arquivo_recebido.txt'")
+    else:
+        print("[ERRO] Algumas partes estao faltando.")
 
-        if None not in buffer:
-            print("[TODAS AS PARTES RECEBIDAS] Reconstruindo o arquivo...")
-            full_data = b''.join(buffer)
 
-            with open("arquivo_recebido.txt", "wb") as f:
-                f.write(full_data)
+def main():
+    # solicitar configuracoes do usuario
+    server_ip, server_port, filename, simulate_loss, simulate_interruption = solicitar_configuracoes()
+    message = construir_mensagem(filename, simulate_interruption)
 
-            print("[ARQUIVO SALVO COMO] 'arquivo_recebido.txt'")
-        else:
-            print("[ERRO] Algumas partes estão faltando.")
+    # criar socket UDP
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(5.0)
+    sock.sendto(message.encode(), (server_ip, server_port))
 
-except socket.timeout:
-    print("[ERRO] Sem resposta do servidor.")
+    try:
+        # aguardar resposta do servidor
+        response, _ = sock.recvfrom(1024)
+        response_str = response.decode()
+
+        print("\n[RESPOSTA DO SERVIDOR]")
+        print(response_str)
+
+        # se tiver "ERRO", imprimir e encerrar
+        if response_str.startswith("ERRO"):
+            print("[ENCERRADO] O servidor retornou um erro.")
+            return
+
+        # se tiver "ok: enviando", receber o arquivo
+        if "OK: Enviando" in response_str:
+            total_parts = int(response_str.split()[-2])
+            buffer = receber_arquivo(sock, server_ip, server_port, total_parts, simulate_loss)
+            salvar_arquivo(buffer)
+
+    except socket.timeout:
+        print("[ERRO] Sem resposta do servidor.")
+
+
+if __name__ == "__main__":
+    main()
